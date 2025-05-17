@@ -2,9 +2,9 @@
 // 主要功能：
 // 1. 自动保存最近聊天记录到IndexedDB (基于事件触发, 区分立即与防抖)
 // 2. 在插件页面显示保存的记录
-// 3. 提供恢复功能，将保存的聊天记录恢复到新的聊天中
+// 3. 提供恢复功能，将保存的聊天记录恢复到新的聊天中F
 // 4. 使用Web Worker优化深拷贝性能
-// 5. 兼容记忆表格插件，利用表格插件自身的导入/导出机制实现表格的备份和恢复
+// 5. 改进表格插件数据备份和恢复，利用表格插件自身的导入/导出机制
 
 import {
     getContext,
@@ -755,7 +755,9 @@ function performBackupDebounced() {
 
         logDebug(`Executing delayed backup operation (from debounce), ChatKey: ${currentChatKey}`);
         // Only perform conditional backup if context matches
-        await performBackupConditional();
+        await performBackupConditional().catch(error => {
+            console.error(`[聊天自动备份] 防抖备份事件 ${currentChatKey} 处理失败:`, error);
+        });
         backupTimeout = null; // Clear the timer ID
     }, delay);
 }
@@ -834,7 +836,7 @@ async function restoreBackup(backupData) {
                 // **Key Delay 1.5: Add delay after switching character/group**
                 // SillyTavern will trigger CHAT_CHANGED at this point, give the table plugin some time to process (even if it errors)
                 console.log('[聊天自动备份] Step 1.5: Adding brief delay after context switch...');
-                await new Promise(resolve => setTimeout(resolve, 200)); 
+                await new Promise(resolve => setTimeout(resolve, 500)); // Add delay, e.g., 500ms
                 console.log('[聊天自动备份] Step 1.5: Delay ended. Current context:', {
                     groupId: getContext().groupId, characterId: getContext().characterId, chatId: getContext().chatId
                 });
@@ -855,7 +857,7 @@ async function restoreBackup(backupData) {
          // **Key Delay 2.5: Add delay after creating new chat**
          // SillyTavern will trigger CHAT_CHANGED again here
         console.log('[聊天自动备份] Step 2.5: Adding brief delay after creating new chat...');
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Add delay, e.g., 1000ms
         console.log('[聊天自动备份] Step 2.5: Delay ended');
 
 
@@ -967,7 +969,7 @@ async function restoreBackup(backupData) {
             // This delay gives SillyTavern enough time to process the automatic CHAT_CHANGED event
             // and for the environment (including getContext) to become stable.
             console.log('[聊天自动备份] Step 6.5: Waiting for SillyTavern to complete chat load and UI stabilization...');
-            await new Promise(resolve => setTimeout(resolve, 1000)); 
+            await new Promise(resolve => setTimeout(resolve, 3000)); // 3 seconds delay (adjust if needed)
             console.log('[聊天自动备份] Step 6.5: Delay ended. Current context:', {
                  groupId: getContext().groupId, characterId: getContext().characterId, chatId: getContext().chatId, chatMetadata: getContext().chatMetadata ? '...' : 'undefined'
             });
@@ -1143,18 +1145,32 @@ async function updateBackupsList() {
 
 // --- 初始化与事件绑定 ---
 jQuery(async () => {
-    console.log('[聊天自动备份] 插件加载中...');
+    console.log('[聊天自动备份] 插件开始加载...');
 
     // 初始化设置
     const settings = initSettings();
 
-    try {
-        // 初始化数据库
-        await initDatabase();
+    // 防止重复初始化的标志位
+    let isInitialized = false;
 
-        // --- 创建 Web Worker ---
+    // --- 将各个初始化步骤拆分成独立函数 ---
+    
+    // 初始化数据库
+    const initializeDatabase = async () => {
+        console.log('[聊天自动备份] 初始化数据库');
         try {
-            // 创建 Worker
+            await initDatabase();
+            return true;
+        } catch (error) {
+            console.error('[聊天自动备份] 数据库初始化失败:', error);
+            return false;
+        }
+    };
+    
+    // 初始化Web Worker
+    const initializeWebWorker = () => {
+        console.log('[聊天自动备份] 初始化Web Worker');
+        try {
             const blob = new Blob([deepCopyLogicString], { type: 'application/javascript' });
             backupWorker = new Worker(URL.createObjectURL(blob));
             console.log('[聊天自动备份] Web Worker 已创建');
@@ -1185,39 +1201,57 @@ jQuery(async () => {
                  });
                 toastr.error('备份 Worker 发生错误，自动备份可能已停止', '聊天自动备份');
             };
-
+            
+            return true;
         } catch (workerError) {
             console.error('[聊天自动备份] 创建 Web Worker 失败:', workerError);
             backupWorker = null; // 确保 worker 实例为空
             toastr.error('无法创建备份 Worker，将回退到主线程备份（性能较低）', '聊天自动备份');
+            return false;
         }
+    };
+    
+    // 加载插件UI
+    const initializePluginUI = async () => {
+        console.log('[聊天自动备份] 初始化插件UI');
+        try {
+            // 加载模板
+            const settingsHtml = await renderExtensionTemplateAsync(
+                `third-party/${PLUGIN_NAME}`,
+                'settings'
+            );
+            $('#extensions_settings').append(settingsHtml);
+            console.log('[聊天自动备份] 已添加设置界面');
 
-        // 加载插件UI
-        const settingsHtml = await renderExtensionTemplateAsync(
-            `third-party/${PLUGIN_NAME}`,
-            'settings'
-        );
-        $('#extensions_settings').append(settingsHtml);
-        console.log('[聊天自动备份] 已添加设置界面');
-
-        // 设置控制项
-        const $settingsBlock = $('<div class="chat_backup_control_item"></div>');
-        $settingsBlock.html(`
-            <div style="margin-bottom: 8px;">
-                <label style="display: inline-block; min-width: 120px;">防抖延迟 (ms):</label>
-                <input type="number" id="chat_backup_debounce_delay" value="${settings.backupDebounceDelay}" 
-                    min="300" max="30000" step="100" title="编辑或删除消息后，等待多少毫秒再执行备份 (建议 1000-1500)" 
-                    style="width: 80px;" />
-            </div>
-            <div>
-                <label style="display: inline-block; min-width: 120px;">系统最大备份数:</label>
-                <input type="number" id="chat_backup_max_total" value="${settings.maxTotalBackups}" 
-                    min="1" max="50" step="1" title="系统中保留的最大备份数量" 
-                    style="width: 80px;" />
-            </div>
-        `);
-        $('.chat_backup_controls').prepend($settingsBlock);
-
+            // 设置控制项
+            const $settingsBlock = $('<div class="chat_backup_control_item"></div>');
+            $settingsBlock.html(`
+                <div style="margin-bottom: 8px;">
+                    <label style="display: inline-block; min-width: 120px;">防抖延迟 (ms):</label>
+                    <input type="number" id="chat_backup_debounce_delay" value="${settings.backupDebounceDelay}" 
+                        min="300" max="30000" step="100" title="编辑或删除消息后，等待多少毫秒再执行备份 (建议 1000-1500)" 
+                        style="width: 80px;" />
+                </div>
+                <div>
+                    <label style="display: inline-block; min-width: 120px;">系统最大备份数:</label>
+                    <input type="number" id="chat_backup_max_total" value="${settings.maxTotalBackups}" 
+                        min="1" max="50" step="1" title="系统中保留的最大备份数量" 
+                        style="width: 80px;" />
+                </div>
+            `);
+            $('.chat_backup_controls').prepend($settingsBlock);
+            
+            return true;
+        } catch (error) {
+            console.error('[聊天自动备份] 初始化插件UI失败:', error);
+            return false;
+        }
+    };
+    
+    // 设置UI控件事件监听
+    const setupUIEvents = () => {
+        console.log('[聊天自动备份] 设置UI事件监听');
+        
         // 添加最大备份数设置监听
         $(document).on('input', '#chat_backup_max_total', function() {
             const total = parseInt($(this).val(), 10);
@@ -1473,70 +1507,7 @@ jQuery(async () => {
             console.log('[聊天自动备份] 调试模式已' + (settings.debug ? '启用' : '禁用'));
             saveSettingsDebounced();
         });
-
-        // 初始化UI状态 (延迟确保DOM渲染完毕)
-        setTimeout(async () => {
-            $('#chat_backup_debug_toggle').prop('checked', settings.debug);
-            $('#chat_backup_debounce_delay').val(settings.backupDebounceDelay);
-            $('#chat_backup_max_total').val(settings.maxTotalBackups);
-            await updateBackupsList();
-        }, 300);
-
-        // --- 设置优化后的事件监听 ---
-        function setupBackupEvents() {
-            // 立即触发备份的事件 (状态明确结束)
-            const immediateBackupEvents = [
-                event_types.MESSAGE_SENT,           // 用户发送消息后
-                event_types.GENERATION_ENDED,       // AI生成完成并添加消息后
-                event_types.CHARACTER_FIRST_MESSAGE_SELECTED, // 选择角色第一条消息时                
-            ].filter(Boolean); // 过滤掉可能不存在的事件类型
-
-            // 触发防抖备份的事件 (编辑性操作)
-            const debouncedBackupEvents = [
-                event_types.MESSAGE_EDITED,        // 编辑消息后 (防抖)
-                event_types.MESSAGE_DELETED,       // 删除消息后 (防抖)
-                event_types.MESSAGE_SWIPED,         // 用户切换AI回复后 (防抖)
-                event_types.IMAGE_SWIPED,           // 图片切换 (防抖)
-                event_types.MESSAGE_FILE_EMBEDDED, // 文件嵌入 (防抖)
-                event_types.MESSAGE_REASONING_EDITED, // 编辑推理 (防抖)
-                event_types.MESSAGE_REASONING_DELETED, // 删除推理 (防抖)
-                event_types.FILE_ATTACHMENT_DELETED, // 附件删除 (防抖)
-                event_types.GROUP_UPDATED, // 群组元数据更新 (防抖)
-            ].filter(Boolean);
-
-            console.log('[聊天自动备份] 设置立即备份事件监听:', immediateBackupEvents);
-            immediateBackupEvents.forEach(eventType => {
-                if (!eventType) {
-                    console.warn('[聊天自动备份] 检测到未定义的立即备份事件类型');
-                    return;
-                }
-                eventSource.on(eventType, () => {
-                    logDebug(`事件触发 (立即备份): ${eventType}`);
-                    // 使用新的条件备份函数
-                    performBackupConditional().catch(error => {
-                        console.error(`[聊天自动备份] 立即备份事件 ${eventType} 处理失败:`, error);
-                    });
-                });
-            });
-
-            console.log('[聊天自动备份] 设置防抖备份事件监听:', debouncedBackupEvents);
-            debouncedBackupEvents.forEach(eventType => {
-                if (!eventType) {
-                    console.warn('[聊天自动备份] 检测到未定义的防抖备份事件类型');
-                    return;
-                }
-                eventSource.on(eventType, () => {
-                    logDebug(`事件触发 (防抖备份): ${eventType}`);
-                    // 使用新的防抖备份函数
-                    performBackupDebounced();
-                });
-            });
-
-            console.log('[聊天自动备份] 事件监听器设置完成');
-        }
-
-        setupBackupEvents(); // 应用新的事件绑定逻辑
-
+        
         // 监听扩展页面打开事件，刷新列表
         $(document).on('click', '#extensionsMenuButton', () => {
             if ($('#chat_auto_backup_settings').is(':visible')) {
@@ -1554,30 +1525,141 @@ jQuery(async () => {
                 setTimeout(updateBackupsList, 50); // 几乎立即刷新
             }
         });
+    };
+    
+    // 初始化UI状态
+    const initializeUIState = async () => {
+        console.log('[聊天自动备份] 初始化UI状态');
+        $('#chat_backup_debug_toggle').prop('checked', settings.debug);
+        $('#chat_backup_debounce_delay').val(settings.backupDebounceDelay);
+        $('#chat_backup_max_total').val(settings.maxTotalBackups);
+        await updateBackupsList();
+    };
+    
+    // 设置备份事件监听
+    const setupBackupEvents = () => {
+        console.log('[聊天自动备份] 设置备份事件监听');
+        
+        // 立即触发备份的事件 (状态明确结束)
+        const immediateBackupEvents = [
+            event_types.MESSAGE_SENT,           // 用户发送消息后
+            event_types.GENERATION_ENDED,       // AI生成完成并添加消息后
+            event_types.CHARACTER_FIRST_MESSAGE_SELECTED, // 选择角色第一条消息时                
+        ].filter(Boolean); // 过滤掉可能不存在的事件类型
 
-        // 初始备份检查 (延迟执行，确保聊天已加载)
-        setTimeout(async () => {
-            logDebug('[聊天自动备份] 执行初始备份检查');
+        // 触发防抖备份的事件 (编辑性操作)
+        const debouncedBackupEvents = [
+            event_types.MESSAGE_EDITED,        // 编辑消息后 (防抖)
+            event_types.MESSAGE_DELETED,       // 删除消息后 (防抖)
+            event_types.MESSAGE_SWIPED,         // 用户切换AI回复后 (防抖)
+            event_types.IMAGE_SWIPED,           // 图片切换 (防抖)
+            event_types.MESSAGE_FILE_EMBEDDED, // 文件嵌入 (防抖)
+            event_types.MESSAGE_REASONING_EDITED, // 编辑推理 (防抖)
+            event_types.MESSAGE_REASONING_DELETED, // 删除推理 (防抖)
+            event_types.FILE_ATTACHMENT_DELETED, // 附件删除 (防抖)
+            event_types.GROUP_UPDATED, // 群组元数据更新 (防抖)
+        ].filter(Boolean);
+
+        console.log('[聊天自动备份] 设置立即备份事件监听:', immediateBackupEvents);
+        immediateBackupEvents.forEach(eventType => {
+            if (!eventType) {
+                console.warn('[聊天自动备份] 检测到未定义的立即备份事件类型');
+                return;
+            }
+            eventSource.on(eventType, () => {
+                logDebug(`事件触发 (立即备份): ${eventType}`);
+                // 使用新的条件备份函数
+                performBackupConditional().catch(error => {
+                    console.error(`[聊天自动备份] 立即备份事件 ${eventType} 处理失败:`, error);
+                });
+            });
+        });
+
+        console.log('[聊天自动备份] 设置防抖备份事件监听:', debouncedBackupEvents);
+        debouncedBackupEvents.forEach(eventType => {
+            if (!eventType) {
+                console.warn('[聊天自动备份] 检测到未定义的防抖备份事件类型');
+                return;
+            }
+            eventSource.on(eventType, () => {
+                logDebug(`事件触发 (防抖备份): ${eventType}`);
+                // 使用新的防抖备份函数
+                performBackupDebounced();
+            });
+        });
+
+        console.log('[聊天自动备份] 事件监听器设置完成');
+    };
+    
+    // 执行初始备份检查
+    const performInitialBackupCheck = async () => {
+        console.log('[聊天自动备份] 执行初始备份检查');
+        try {
             const context = getContext();
             if (context.chat && context.chat.length > 0 && !isBackupInProgress) {
                 logDebug('[聊天自动备份] 发现现有聊天记录，执行初始备份');
-                try {
-                    await performBackupConditional(); // 使用条件函数
-                } catch (error) {
-                    console.error('[聊天自动备份] 初始备份执行失败:', error);
-                }
+                await performBackupConditional(); // 使用条件函数
             } else {
                 logDebug('[聊天自动备份] 当前没有聊天记录或备份进行中，跳过初始备份');
             }
-        }, 2000); // 稍长延迟，等待应用完全初始化
+        } catch (error) {
+            console.error('[聊天自动备份] 初始备份执行失败:', error);
+        }
+    };
 
-        console.log('[聊天自动备份] 插件加载完成');
+    // --- 主初始化函数 ---
+    const initializeExtension = async () => {
+        if (isInitialized) {
+            console.log('[聊天自动备份] 初始化已运行。跳过。');
+            return;
+        }
+        isInitialized = true;
+        console.log('[聊天自动备份] 由 app_ready 事件触发，运行初始化任务。');
+        
+        try {
+            // 顺序执行初始化任务
+            if (!await initializeDatabase()) {
+                console.warn('[聊天自动备份] 数据库初始化失败，但将尝试继续');
+            }
+            
+            initializeWebWorker();
+            
+            if (!await initializePluginUI()) {
+                console.warn('[聊天自动备份] 插件UI初始化失败，但将尝试继续');
+            }
+            
+            setupUIEvents();
+            setupBackupEvents();
+            
+            await initializeUIState();
+            
+            // 延迟一小段时间后执行初始备份检查，确保系统已经稳定
+            setTimeout(performInitialBackupCheck, 1000);
+            
+            console.log('[聊天自动备份] 插件加载完成');
+        } catch (error) {
+            console.error('[聊天自动备份] 插件加载过程中发生严重错误:', error);
+            $('#extensions_settings').append(
+                '<div class="error">聊天自动备份插件加载失败，请检查控制台。</div>'
+            );
+        }
+    };
 
-    } catch (error) {
-        console.error('[聊天自动备份] 插件加载过程中发生严重错误:', error);
-        // 可以在UI上显示错误信息
-        $('#extensions_settings').append(
-            '<div class="error">聊天自动备份插件加载失败，请检查控制台。</div>'
-        );
+    // --- 监听SillyTavern的app_ready事件 ---
+    eventSource.on('app_ready', initializeExtension);
+    
+    // 如果事件已经错过，则直接初始化
+    if (window.SillyTavern?.appReady) {
+        console.log('[聊天自动备份] app_ready已发生，直接初始化');
+        initializeExtension();
+    } else {
+        console.log('[聊天自动备份] 等待app_ready事件触发初始化');
+        // 设置安全兜底，确保插件最终会初始化
+        setTimeout(() => {
+            if (!isInitialized) {
+                console.warn('[聊天自动备份] app_ready事件未触发，使用兜底机制初始化');
+                initializeExtension();
+            }
+        }, 3000); // 3秒后如果仍未初始化，则强制初始化
     }
 });
