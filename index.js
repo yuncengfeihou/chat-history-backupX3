@@ -967,7 +967,7 @@ async function restoreBackup(backupData) {
             // This delay gives SillyTavern enough time to process the automatic CHAT_CHANGED event
             // and for the environment (including getContext) to become stable.
             console.log('[聊天自动备份] Step 6.5: Waiting for SillyTavern to complete chat load and UI stabilization...');
-            await new Promise(resolve => setTimeout(resolve, 3000)); // 3 seconds delay (adjust if needed)
+            await new Promise(resolve => setTimeout(resolve, 1000)); 
             console.log('[聊天自动备份] Step 6.5: Delay ended. Current context:', {
                  groupId: getContext().groupId, characterId: getContext().characterId, chatId: getContext().chatId, chatMetadata: getContext().chatMetadata ? '...' : 'undefined'
             });
@@ -1569,7 +1569,7 @@ jQuery(async () => {
             } else {
                 logDebug('[聊天自动备份] 当前没有聊天记录或备份进行中，跳过初始备份');
             }
-        }, 3000); // 稍长延迟，等待应用完全初始化
+        }, 2000); // 稍长延迟，等待应用完全初始化
 
         console.log('[聊天自动备份] 插件加载完成');
 
