@@ -834,7 +834,7 @@ async function restoreBackup(backupData) {
                 // **Key Delay 1.5: Add delay after switching character/group**
                 // SillyTavern will trigger CHAT_CHANGED at this point, give the table plugin some time to process (even if it errors)
                 console.log('[聊天自动备份] Step 1.5: Adding brief delay after context switch...');
-                await new Promise(resolve => setTimeout(resolve, 500)); // Add delay, e.g., 500ms
+                await new Promise(resolve => setTimeout(resolve, 200)); 
                 console.log('[聊天自动备份] Step 1.5: Delay ended. Current context:', {
                     groupId: getContext().groupId, characterId: getContext().characterId, chatId: getContext().chatId
                 });
@@ -855,7 +855,7 @@ async function restoreBackup(backupData) {
          // **Key Delay 2.5: Add delay after creating new chat**
          // SillyTavern will trigger CHAT_CHANGED again here
         console.log('[聊天自动备份] Step 2.5: Adding brief delay after creating new chat...');
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Add delay, e.g., 1000ms
+        await new Promise(resolve => setTimeout(resolve, 200));
         console.log('[聊天自动备份] Step 2.5: Delay ended');
 
 
