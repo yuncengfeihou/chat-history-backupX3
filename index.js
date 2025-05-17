@@ -4,7 +4,7 @@
 // 2. 在插件页面显示保存的记录
 // 3. 提供恢复功能，将保存的聊天记录恢复到新的聊天中F
 // 4. 使用Web Worker优化深拷贝性能
-// 5. 兼容记忆表格插件，利用表格插件自身的导入/导出机制实现表格数据备份和恢复
+// 5. 改进表格插件数据备份和恢复，利用表格插件自身的导入/导出机制
 
 import {
     getContext,
@@ -654,18 +654,8 @@ async function performBackupConditional() {
     clearTimeout(backupTimeout); // Cancel any pending debounced backups
     backupTimeout = null;
 
-    try {
-        // Calling saveChatConditional() to ensure metadata is potentially updated
-        // This might trigger the table plugin's logic and potentially errors, but it's part of standard flow.
-        logDebug('Attempting to call saveChatConditional() to refresh metadata...');
-        console.log('[聊天自动备份] Before saveChatConditional', getContext().chatMetadata);
-        await saveChatConditional();
-        await new Promise(resolve => setTimeout(resolve, 100)); // Small delay
-        logDebug('saveChatConditional() call completed, proceeding to get context');
-        console.log('[聊天自动备份] After saveChatConditional', getContext().chatMetadata);
-    } catch (e) {
-        console.warn('[聊天自动备份] Error occurred while calling saveChatConditional (might be harmless):', e);
-    }
+    // 插件应该专注于从当前系统状态获取数据并创建备份，而不应该尝试控制或依赖SillyTavern的保存机制。
+    // 因此，我们不再尝试调用saveChatConditional()，而是直接从当前上下文获取数据。
 
     const context = getContext();
     const chatKey = getCurrentChatKey();
